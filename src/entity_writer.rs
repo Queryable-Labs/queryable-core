@@ -696,12 +696,9 @@ impl EntityWriter {
         let mut fields_arrow_array: Vec<ArrayRef> = vec![];
 
         debug!("Exporting entity `{}`", self.entity.name);
-        println!("Exporting entity `{}`", self.entity.name);
 
         for field in self.arrow_schema.fields.iter() {
             let key = field.name().clone();
-
-            println!("Exporting Field {}", key);
 
             let array_builder = self.fields.get_mut(key.as_str()).unwrap();
 
