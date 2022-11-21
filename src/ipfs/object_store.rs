@@ -11,11 +11,11 @@ use tokio::io::AsyncWrite;
 use ipfs_api_backend_hyper::IpfsApi;
 use object_store::{Error, GetResult, ListResult, ObjectMeta, ObjectStore, Result, path::Path, MultipartId};
 use crate::ipfs::client::IpfsClient;
-use crate::types::datasource::BlockItem;
+use crate::types::datasource::PublishedBlockItem;
 
 pub struct IPFSFileSystem {
     pub client: IpfsClient,
-    pub block_items: Vec<BlockItem>,
+    pub block_items: Vec<PublishedBlockItem>,
 }
 
 impl Debug for IPFSFileSystem {
@@ -44,7 +44,7 @@ impl std::error::Error for IPFSStatError {}
 impl IPFSFileSystem {
     pub fn new(
         client: IpfsClient,
-        block_items: Vec<BlockItem>,
+        block_items: Vec<PublishedBlockItem>,
     ) -> Self {
         Self {
             client,
@@ -67,10 +67,10 @@ impl IPFSFileSystem {
                 return Ok(
                     ObjectMeta {
                         location: location.clone(),
-                        last_modified: Utc.timestamp(
+                        last_modified: Utc.timestamp_opt(
                             block_item.created_at.clone() as i64,
                             0
-                        ),
+                        ).unwrap(),
                         size: block_item.size as usize,
                     }
                 )

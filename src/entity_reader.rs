@@ -8,7 +8,7 @@ use datafusion::prelude::SessionContext;
 use log::debug;
 use crate::ipfs::client::get_ipfs_client;
 use crate::ipfs::object_store::IPFSFileSystem;
-use crate::types::datasource::BlockItem;
+use crate::types::datasource::PublishedBlockItem;
 use crate::types::entity::Entity;
 use crate::types::error::QueryError;
 use crate::types::filter::Expression;
@@ -35,7 +35,7 @@ impl EntityReader {
 
     pub async fn query(
         &self,
-        block_items: &Vec<BlockItem>,
+        block_items: &Vec<PublishedBlockItem>,
         filter: &Vec<Option<Expression>>,
         skip: Option<u64>,
         limit: Option<usize>,

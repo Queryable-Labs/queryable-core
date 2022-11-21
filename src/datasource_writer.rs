@@ -1,22 +1,20 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use serde_json;
-use ipfs_api_backend_hyper::IpfsApi;
 use log::{debug, info, warn};
-use crate::constant::{DATASOURCE_BLOCK_ITEMS_FILE_NAME, PARQUET_METADATA_FIELD_BLOCKS_PAGINATION, PARQUET_METADATA_FIELD_ENGINE};
-use crate::ipfs::client::{NamePublishOps, get_ipfs_client};
+use crate::constant::DATASOURCE_BLOCK_ITEMS_FILE_NAME;
 use crate::entity_writer::EntityWriter;
 use crate::types::error::DatasourceWriterError;
 use crate::writer_context::WriterContext;
-use crate::types::datasource::{BlockItem, DatasourceBlockItems, DatasourceBlocks};
+use crate::types::datasource::{PublishedBlockItem, DatasourceBlockItems, LocalBlockItem};
 use crate::types::entity::Entity;
 
 pub struct DatasourceWriter {
     context: WriterContext,
     blocks_path: PathBuf,
-    engine: String,
+
     entities: Vec<Entity>,
 
     name: String,
@@ -25,7 +23,9 @@ pub struct DatasourceWriter {
 
     writers: HashMap<String, EntityWriter>,
 
-    last_block_items: HashMap<String, Vec<BlockItem>>,
+    published_block_items: HashMap<String, Vec<PublishedBlockItem>>,
+    local_block_items: HashMap<String, LocalBlockItem>,
+
     last_exported_state: Option<String>,
     last_ids: HashMap<String, u64>,
 
@@ -42,7 +42,7 @@ impl std::fmt::Debug for DatasourceWriter {
             .field("name", &self.name)
             .field("description", &self.description)
             .field("logoUrl", &self.logo_url)
-            .field("block_items", &self.last_block_items)
+            .field("block_items", &self.published_block_items)
             .field("last_exported_state", &self.last_exported_state)
             .field("last_ids", &self.last_ids)
             .field("current_ids", &self.current_ids)
@@ -53,7 +53,6 @@ impl std::fmt::Debug for DatasourceWriter {
 impl DatasourceWriter {
     pub fn new(
         context: WriterContext,
-        engine: String,
         name: String,
         description: String,
         logo_url: String,
@@ -79,13 +78,13 @@ impl DatasourceWriter {
             Path::new(DATASOURCE_BLOCK_ITEMS_FILE_NAME)
         );
 
-        let block_items: HashMap<String, Vec<BlockItem>>;
+        let published_block_items: HashMap<String, Vec<PublishedBlockItem>>;
         let exported_state: Option<String>;
         let ids: HashMap<String, u64>;
 
         if !datasource_blocks_path.is_file() {
             warn!("Datasource blocks file is not exist, using empty");
-            block_items = HashMap::new();
+            published_block_items = HashMap::new();
             exported_state = None;
             ids = HashMap::new();
         } else {
@@ -98,7 +97,7 @@ impl DatasourceWriter {
                 contents.as_str()
             )?;
 
-            block_items = datasource_block_items.block_items;
+            published_block_items = datasource_block_items.block_items;
             exported_state = datasource_block_items.exported_state;
             ids = datasource_block_items.ids;
         }
@@ -107,7 +106,6 @@ impl DatasourceWriter {
             Self {
                 context,
                 blocks_path: datasource_blocks_path,
-                engine,
 
                 name,
                 description,
@@ -116,7 +114,9 @@ impl DatasourceWriter {
                 entities,
                 writers,
 
-                last_block_items: block_items,
+                published_block_items,
+                local_block_items: HashMap::new(),
+
                 last_exported_state: exported_state,
                 last_ids: ids.clone(),
 
@@ -168,6 +168,14 @@ impl DatasourceWriter {
         self.last_exported_state.clone()
     }
 
+    pub fn local_block_items(&self) -> &HashMap<String, LocalBlockItem> {
+        &self.local_block_items
+    }
+
+    pub fn published_block_items(&self) -> &HashMap<String, Vec<PublishedBlockItem>> {
+        &self.published_block_items
+    }
+
     pub fn get_blocks_per_export(&self) -> u32 {
         self.context.blocks_per_export
     }
@@ -176,104 +184,36 @@ impl DatasourceWriter {
         return self.writers.get_mut(&entity_name);
     }
 
-    #[tokio::main(flavor = "current_thread")]
-    pub async fn export(
-        &mut self,
-        exported_state: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> anyhow::Result<()> {
-        let result = self.export_async(
-            exported_state,
-            metadata,
-        ).await;
-
-        match result {
-            Ok(()) => {
-                Ok(())
-            },
-            Err(err) => {
-                Err(err)
-            }
-        }
-    }
-
-    pub async fn export_async(
-        &mut self,
-        exported_state: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> anyhow::Result<()> {
-        let mut new_block_items: HashMap<String, Vec<BlockItem>> = self.last_block_items.clone();
-
+    pub fn export_local(&mut self) -> Result<(), DatasourceWriterError> {
         for (name, writer) in self.writers.iter_mut() {
-            if ! new_block_items.contains_key(name) {
-                new_block_items.insert(name.clone(), vec![]);
+            info!("Exporting enity {}", name);
+
+            if ! self.published_block_items.contains_key(name) {
+                self.published_block_items.insert(name.clone(), vec![]);
             }
 
-            let block_items = new_block_items.get_mut(name).unwrap();
+            let published_block_items = self.published_block_items.get_mut(name).unwrap();
 
-            let block_item = writer.export_async(
-                block_items.len()
-            ).await.map_err(|err| {
+            let block_item = writer.export(
+                published_block_items.len()
+            ).map_err(|err| {
                 warn!("Failed to export data for entity {}", writer.entity().name);
                 err
             })?;
 
-            new_block_items.get_mut(name).unwrap().push(block_item);
+            self.local_block_items.insert(name.clone(), block_item);
         }
 
-        let ipfs_client = get_ipfs_client(self.context.ipfs_daemon_url.as_str())?;
+        Ok(())
+    }
 
-        let params = self.entities
-            .iter()
-            .map(|entity| (entity.name.clone(), entity.clone()))
-            .collect::<Vec<(String, Entity)>>();
-
-        let mut metadata: HashMap<String, String> = metadata.clone();
-
-        metadata.insert(
-            String::from(PARQUET_METADATA_FIELD_ENGINE),
-            self.engine.clone()
-        );
-        metadata.insert(
-            String::from(PARQUET_METADATA_FIELD_BLOCKS_PAGINATION),
-            self.context.blocks_per_export.to_string()
-        );
-
-        let datasource = DatasourceBlocks {
-            version: String::from("0.1"),
-            name: self.name.clone(),
-            description: self.description.clone(),
-            logo_url: self.logo_url.clone(),
-            entities: params.into_iter().collect(),
-            data: new_block_items.clone(),
-            metadata,
-        };
-
-        let datasource_serialized = serde_json::to_string(&datasource)?;
-
-        let data = Cursor::new(datasource_serialized);
-
-        let datasource_add_response = ipfs_client.add(data).await?;
-
-        debug!(
-            "Uploaded datasource, hash: {}, size: {}",
-            datasource_add_response.hash,
-            datasource_add_response.size,
-        );
-
-        let name_publish_response = ipfs_client.name_publish_v2(
-                datasource_add_response.hash,
-                self.context.ipns_key.clone(),
-        ).await?;
-
-        debug!(
-            "Published updated datasource, name: {}, value: {}",
-            name_publish_response.name,
-            name_publish_response.value
-        );
-
+    pub fn confirm_export(
+        &mut self,
+        published_block_items: HashMap<String, Vec<PublishedBlockItem>>,
+        exported_state: Option<String>,
+    ) -> Result<(), DatasourceWriterError> {
         let datasource_block_items: DatasourceBlockItems = DatasourceBlockItems::new(
-            new_block_items.clone(),
+            published_block_items.clone(),
             exported_state.clone(),
             self.current_ids.clone(),
         );
@@ -285,7 +225,9 @@ impl DatasourceWriter {
 
         debug!("Saved block items to FS");
 
-        self.last_block_items = new_block_items;
+        self.published_block_items = published_block_items;
+
+        self.local_block_items.clear();
         self.last_exported_state = exported_state;
         self.last_ids = self.current_ids.clone();
 
@@ -297,6 +239,7 @@ impl DatasourceWriter {
             writer.clean();
         }
 
+        self.local_block_items.clear();
         self.current_ids = self.last_ids.clone();
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, metadata};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use datafusion::arrow::array::{ArrayBuilder, ArrayRef, StructBuilder, ListBuilder, BinaryBuilder,
                                BooleanBuilder, Date32Builder, Date64Builder, Decimal128Builder,
@@ -19,7 +19,7 @@ use datafusion::parquet::basic::{Compression, Encoding};
 use datafusion::parquet::file::metadata::KeyValue;
 use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use datafusion::parquet::schema::types::ColumnPath;
-use log::debug;
+use log::{debug, info};
 use crate::constant::{
     BLOCK_INDEX_COLUMN_NAME, PARQUET_METADATA_FIELD_ARROW_SCHEMA,
     PARQUET_METADATA_FIELD_END_BLOCK_SCHEMA, PARQUET_METADATA_FIELD_END_ID_SCHEMA,
@@ -27,8 +27,7 @@ use crate::constant::{
     PARQUET_METADATA_FIELD_START_BLOCK_SCHEMA, PARQUET_METADATA_FIELD_START_ID_SCHEMA,
     PARQUET_METADATA_FIELD_START_TIME_SCHEMA, TIME_INDEX_COLUMN_NAME};
 use crate::writer_context::WriterContext;
-use crate::ipfs::client::{AddLocalOps, get_ipfs_client};
-use crate::types::datasource::BlockItem;
+use crate::types::datasource::LocalBlockItem;
 use crate::types::entity::{Entity, EntityFieldEncoding};
 use crate::types::error::DatasourceWriterError;
 
@@ -38,6 +37,7 @@ macro_rules! add_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
 
                 if let Some(value) = value {
@@ -62,6 +62,7 @@ macro_rules! add_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
 
                 if let Some(value) = value {
@@ -88,6 +89,7 @@ macro_rules! add_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
 
                 if let Some(values) = values {
@@ -120,6 +122,7 @@ macro_rules! add_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
 
                 if let Some(values) = values {
@@ -154,6 +157,7 @@ macro_rules! add_struct_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
 
                 let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
@@ -188,6 +192,7 @@ macro_rules! add_struct_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
 
                 let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
@@ -224,6 +229,7 @@ macro_rules! add_struct_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
 
                 let field_builder = builder.field_builder::<$builder_type>(field_index);
@@ -259,6 +265,7 @@ macro_rules! add_struct_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
+                let mut builder = builder.write().unwrap();
                 let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
 
                 let field_builder = builder.field_builder::<$builder_type>(field_index);
@@ -295,7 +302,7 @@ pub struct EntityWriter {
     entity: Entity,
     arrow_schema: Schema,
 
-    fields: HashMap<String, Box<dyn ArrayBuilder>>,
+    fields: HashMap<String, RwLock<Box<dyn ArrayBuilder>>>,
 
     records_count: usize,
 
@@ -441,7 +448,7 @@ impl EntityWriter {
             entity.fields_schema.clone()
         );
 
-        let mut fields: HashMap<String, Box<dyn ArrayBuilder>> = HashMap::new();
+        let mut fields: HashMap<String, RwLock<Box<dyn ArrayBuilder>>> = HashMap::new();
 
         let mut has_block_index = false;
         let mut has_time_index = false;
@@ -474,7 +481,7 @@ impl EntityWriter {
                 }
             };
 
-            fields.insert(field.name().clone(), builder);
+            fields.insert(field.name().clone(), RwLock::new(builder));
         }
 
         if !has_block_index && !has_time_index {
@@ -541,10 +548,10 @@ impl EntityWriter {
         self.records_count += 1;
     }
 
-    pub async fn export_async(
+    pub fn export(
         &mut self,
         export_iteration: usize,
-    ) -> Result<BlockItem, DatasourceWriterError> {
+    ) -> Result<LocalBlockItem, DatasourceWriterError> {
         let mut start_block: Option<String> = None;
         let mut end_block: Option<String> = None;
         let mut start_time: u64 = 0;
@@ -695,16 +702,16 @@ impl EntityWriter {
         // prepare data
         let mut fields_arrow_array: Vec<ArrayRef> = vec![];
 
-        debug!("Exporting entity `{}`", self.entity.name);
+        info!("Exporting entity `{}`", self.entity.name);
 
         for field in self.arrow_schema.fields.iter() {
             let key = field.name().clone();
 
-            let array_builder = self.fields.get_mut(key.as_str()).unwrap();
+            let mut array_builder = self.fields.get_mut(key.as_str()).unwrap().write().unwrap();
 
             let array = array_builder.finish();
 
-            debug!("Field `{}`, array len `{}`", field.name(), array.len());
+            info!("Field `{}`, array len `{}`", field.name(), array.len());
 
             fields_arrow_array.push(array);
         }
@@ -729,10 +736,6 @@ impl EntityWriter {
 
         let created_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
-        let ipfs_client = get_ipfs_client(self.context.ipfs_daemon_url.as_str())?;
-
-        let add_response = ipfs_client.add_local(path).await?;
-
         self.records_count = 0;
 
         self.start_block = None;
@@ -742,7 +745,7 @@ impl EntityWriter {
         self.start_id = None;
         self.end_id = None;
 
-        Ok(BlockItem {
+        Ok(LocalBlockItem {
             start_time,
             end_time,
             start_block,
@@ -750,7 +753,7 @@ impl EntityWriter {
             start_id,
             end_id,
 
-            ipfs_path: format!("/ipfs/{}", add_response.hash).to_string(),
+            local_path: path.to_str().unwrap().to_string(),
             size: file_size,
             created_at,
         })
@@ -767,7 +770,7 @@ impl EntityWriter {
         self.end_id = None;
 
         for builder in self.fields.values_mut() {
-            builder.finish();
+            builder.write().unwrap().finish();
         }
     }
 }
@@ -902,3 +905,5 @@ impl EntityWriter {
     add_struct_list_primitive_append_method!(add_struct_field_list_value_utf8, ListBuilder<StringBuilder>, String);
     add_struct_list_primitive_append_method!(add_struct_field_list_value_large_utf8, ListBuilder<LargeStringBuilder>, String);
 }
+
+unsafe impl Sync for EntityWriter {}
