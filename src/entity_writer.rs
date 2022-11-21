@@ -711,7 +711,7 @@ impl EntityWriter {
 
             let array = array_builder.finish();
 
-            info!("Field `{}`, array len `{}`", field.name(), array.len());
+            debug!("Field `{}`, array len `{}`", field.name(), array.len());
 
             fields_arrow_array.push(array);
         }
