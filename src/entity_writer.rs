@@ -19,7 +19,7 @@ use datafusion::parquet::basic::{Compression, Encoding};
 use datafusion::parquet::file::metadata::KeyValue;
 use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use datafusion::parquet::schema::types::ColumnPath;
-use log::{debug, info};
+use log::{debug, error, trace};
 use crate::constant::{
     BLOCK_INDEX_COLUMN_NAME, PARQUET_METADATA_FIELD_ARROW_SCHEMA,
     PARQUET_METADATA_FIELD_END_BLOCK_SCHEMA, PARQUET_METADATA_FIELD_END_ID_SCHEMA,
@@ -37,13 +37,40 @@ macro_rules! add_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<$builder_type>() {
+                            Some(builder) => {
+                                if let Some(value) = value {
+                                    trace!("Appending value, field: {}", key);
 
-                if let Some(value) = value {
-                    builder.append_value(value);
-                } else {
-                    builder.append_null();
+                                    builder.append_value(value);
+                                } else {
+                                    trace!("Appending null, field: {}", key);
+
+                                    builder.append_null();
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
+
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
+                        )
+                    }
                 }
             } else {
                 return Err(
@@ -62,13 +89,49 @@ macro_rules! add_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<$builder_type>() {
+                            Some(builder) => {
+                                if let Some(value) = value {
+                                    trace!("Appending value, field: {}", key);
 
-                if let Some(value) = value {
-                    builder.append_value(value)?;
-                } else {
-                    builder.append_null();
+                                    match builder.append_value(value) {
+                                        Ok(()) => {
+                                            return Ok(());
+                                        },
+                                        Err(err) => {
+                                            error!("Failed to append value for field {}, reason: {}", key, err);
+
+                                            return Err(DatasourceWriterError::from(err));
+                                        }
+                                    }
+                                } else {
+                                    trace!("Appending null, field: {}", key);
+
+                                    builder.append_null();
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
+
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
+                        )
+                    }
                 }
             } else {
                 return Err(
@@ -89,21 +152,54 @@ macro_rules! add_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<$builder_type>() {
+                            Some(builder) => {
+                                if let Some(values) = values {
+                                    trace!("Appending values, field: {}", key);
 
-                if let Some(values) = values {
-                    for value in values {
-                        if let Some(value) = value {
-                            builder.values().append_value(value);
-                        } else {
-                            builder.values().append_null();
+                                    for value in values {
+                                        if let Some(value) = value {
+                                            trace!("Appending list value, field: {}", key);
+
+                                            builder.values().append_value(value);
+                                        } else {
+                                            trace!("Appending list null, field: {}", key);
+
+                                            builder.values().append_null();
+                                        }
+                                    }
+
+                                    trace!("Appending list, field: {}", key);
+
+                                    builder.append(true);
+                                } else {
+                                    trace!("Appending null list, field: {}", key);
+
+                                    builder.append(false);
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
                         }
                     }
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
 
-                    builder.append(true);
-                } else {
-                    builder.append(false);
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
+                        )
+                    }
                 }
             } else {
                 return Err(
@@ -122,21 +218,61 @@ macro_rules! add_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<$builder_type>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<$builder_type>() {
+                            Some(builder) => {
+                                if let Some(values) = values {
+                                    trace!("Appending values, field: {}", key);
 
-                if let Some(values) = values {
-                    for value in values {
-                        if let Some(value) = value {
-                            builder.values().append_value(value)?;
-                        } else {
-                            builder.values().append_null();
+                                    for value in values {
+                                        if let Some(value) = value {
+                                            trace!("Appending list value, field: {}", key);
+
+                                            match builder.values().append_value(value) {
+                                                Ok(()) => {},
+                                                Err(err) => {
+                                                    error!("Failed to append list value for field {}, reason: {}", key, err);
+
+                                                    return Err(DatasourceWriterError::from(err));
+                                                }
+                                            }
+                                        } else {
+                                            trace!("Appending list null, field: {}", key);
+
+                                            builder.values().append_null();
+                                        }
+                                    }
+
+                                    trace!("Appending list, field: {}", key);
+
+                                    builder.append(true);
+                                } else {
+                                    trace!("Appending null list, field: {}", key);
+
+                                    builder.append(false);
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
                         }
                     }
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
 
-                    builder.append(true);
-                } else {
-                    builder.append(false);
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
+                        )
+                    }
                 }
             } else {
                 return Err(
@@ -157,23 +293,52 @@ macro_rules! add_struct_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<StructBuilder>() {
+                            Some(builder) => {
+                                let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
 
-                let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
+                                if let Some(field_builder) = field_builder {
+                                    if let Some(value) = value {
+                                        trace!("Appending value, field {}, struct field index {}", key, field_index);
 
-                if let Some(field_builder) = field_builder {
-                    if let Some(value) = value {
-                        field_builder.append_value(value);
-                    } else {
-                        field_builder.append_null();
+                                        field_builder.append_value(value);
+                                    } else {
+                                        trace!("Appending null, field {}, struct field index {}", key, field_index);
+
+                                        field_builder.append_null();
+                                    }
+                                } else {
+                                    error!("Unknown struct field, field {}, struct field index {}", key, field_index);
+
+                                    return Err(
+                                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
+                                            self.entity.name.clone(), key.clone(), field_index.clone()
+                                        )
+                                    )
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
+                        }
                     }
-                } else {
-                    return Err(
-                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
-                            self.entity.name.clone(), key.clone(), field_index.clone()
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
+
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
                         )
-                    )
+                    }
                 }
             } else {
                 return Err(
@@ -192,23 +357,59 @@ macro_rules! add_struct_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<StructBuilder>() {
+                            Some(builder) => {
+                                let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
 
-                let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
+                                if let Some(field_builder) = field_builder {
+                                    if let Some(value) = value {
+                                        trace!("Appending value, field {}, struct field index {}", key, field_index);
 
-                if let Some(field_builder) = field_builder {
-                    if let Some(value) = value {
-                        field_builder.append_value(value)?;
-                    } else {
-                        field_builder.append_null();
+                                        match field_builder.append_value(value) {
+                                            Ok(()) => {},
+                                            Err(err) => {
+                                                error!("Failed to append struct field value for field {}, struct field index {}, reason: {}", key, field_index, err);
+
+                                                return Err(DatasourceWriterError::from(err));
+                                            }
+                                        }
+                                    } else {
+                                        trace!("Appending null, field {}, struct field index {}", key, field_index);
+
+                                        field_builder.append_null();
+                                    }
+                                } else {
+                                    error!("Unknown struct field, field {}, struct field index {}", key, field_index);
+
+                                    return Err(
+                                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
+                                            self.entity.name.clone(), key.clone(), field_index.clone()
+                                        )
+                                    )
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
+                        }
                     }
-                } else {
-                    return Err(
-                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
-                            self.entity.name.clone(), key.clone(), field_index.clone()
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
+
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
                         )
-                    )
+                    }
                 }
             } else {
                 return Err(
@@ -229,24 +430,53 @@ macro_rules! add_struct_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<StructBuilder>() {
+                            Some(builder) => {
+                                let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
 
-                let field_builder = builder.field_builder::<$builder_type>(field_index);
+                                if let Some(field_builder) = field_builder {
+                                    if let Some(value) = value {
+                                        trace!("Appending struct list value, field {}, struct field index {}", key, field_index);
 
-                if let Some(field_builder) = field_builder {
-                    if let Some(value) = value {
-                        field_builder.values().append_value(value);
-                        field_builder.append(true);
-                    } else {
-                        field_builder.append(false);
+                                        field_builder.values().append_value(value);
+                                        field_builder.append(true);
+                                    } else {
+                                        trace!("Appending null struct list, field {}, struct field index {}", key, field_index);
+
+                                        field_builder.append(false);
+                                    }
+                                } else {
+                                    error!("Unknown struct field, field {}, struct field index {}", key, field_index);
+
+                                    return Err(
+                                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
+                                            self.entity.name.clone(), key.clone(), field_index.clone()
+                                        )
+                                    )
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
+                        }
                     }
-                } else {
-                    return Err(
-                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
-                            self.entity.name.clone(), key.clone(), field_index.clone()
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
+
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
                         )
-                    )
+                    }
                 }
             } else {
                 return Err(
@@ -265,24 +495,61 @@ macro_rules! add_struct_list_primitive_append_method {
             let builder = self.fields.get_mut(key.as_str());
 
             if let Some(builder) = builder {
-                let mut builder = builder.write().unwrap();
-                let builder = builder.as_any_mut().downcast_mut::<StructBuilder>().unwrap();
+                match builder.write() {
+                    Ok(mut builder) => {
+                        match builder.as_any_mut().downcast_mut::<StructBuilder>() {
+                            Some(builder) => {
+                                let field_builder = builder.field_builder::<$builder_type>(field_index.clone());
 
-                let field_builder = builder.field_builder::<$builder_type>(field_index);
+                                if let Some(field_builder) = field_builder {
+                                    if let Some(value) = value {
+                                        trace!("Appending struct list value, field {}, struct field index {}", key, field_index);
 
-                if let Some(field_builder) = field_builder {
-                    if let Some(value) = value {
-                        field_builder.values().append_value(value)?;
-                        field_builder.append(true);
-                    } else {
-                        field_builder.append(false);
+                                        match field_builder.values().append_value(value) {
+                                            Ok(()) => {},
+                                            Err(err) => {
+                                                error!("Failed to append struct field list value for field {}, struct field index {}, reason: {}", key, field_index, err);
+
+                                                return Err(DatasourceWriterError::from(err));
+                                            }
+                                        };
+
+                                        field_builder.append(true);
+                                    } else {
+                                        trace!("Appending null struct list, field {}, struct field index {}", key, field_index);
+
+                                        field_builder.append(false);
+                                    }
+                                } else {
+                                    error!("Unknown struct field, field {}, struct field index {}", key, field_index);
+
+                                    return Err(
+                                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
+                                            self.entity.name.clone(), key.clone(), field_index.clone()
+                                        )
+                                    )
+                                }
+                            }
+                            None => {
+                                error!("Failed to downcast to builder, field: {}", key);
+
+                                return Err(
+                                    DatasourceWriterError::EntityWriterErrorIncorrectFieldBuilder(
+                                        self.entity.name.clone(), key.clone()
+                                    )
+                                )
+                            }
+                        }
                     }
-                } else {
-                    return Err(
-                        DatasourceWriterError::EntityWriterErrorUnknownStructField(
-                            self.entity.name.clone(), key.clone(), field_index.clone()
+                    Err(err) => {
+                        error!("Failed to lock field builder, reason: {}", err);
+
+                        return Err(
+                            DatasourceWriterError::EntityWriterErrorLockFieldError(
+                                self.entity.name.clone(), key.clone()
+                            )
                         )
-                    )
+                    }
                 }
             } else {
                 return Err(
@@ -702,14 +969,17 @@ impl EntityWriter {
         // prepare data
         let mut fields_arrow_array: Vec<ArrayRef> = vec![];
 
-        info!("Exporting entity `{}`", self.entity.name);
-
         for field in self.arrow_schema.fields.iter() {
             let key = field.name().clone();
 
+            trace!("Getting field array builder {}", key);
+
             let mut array_builder = self.fields.get_mut(key.as_str()).unwrap().write().unwrap();
 
+            trace!("Exporting field {}", key);
             let array = array_builder.finish();
+
+            trace!("Exported field {}", key);
 
             debug!("Field `{}`, array len `{}`", field.name(), array.len());
 
@@ -729,7 +999,12 @@ impl EntityWriter {
         )
             .expect("Unable to write file");
 
+        trace!("Writing batch");
+
         writer.write(&batch)?;
+
+        trace!("Wrote batch");
+
         writer.close()?;
 
         let file_size = metadata(path.clone())?.len();

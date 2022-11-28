@@ -126,6 +126,12 @@ pub enum DatasourceWriterError {
     #[error("Datasource entity `{0}` has no field named as `{1}`")]
     EntityWriterErrorUnknownField(String, String),
 
+    #[error("Datasource entity `{0}` has field named as `{1}` with different builder")]
+    EntityWriterErrorIncorrectFieldBuilder(String, String),
+
+    #[error("Datasource entity `{0}` cant lock field named as `{1}`")]
+    EntityWriterErrorLockFieldError(String, String),
+
     #[error("Datasource entity `{0}` struct field named as `{1}` has unknown field {2}")]
     EntityWriterErrorUnknownStructField(String, String, usize),
 

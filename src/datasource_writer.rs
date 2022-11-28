@@ -194,12 +194,16 @@ impl DatasourceWriter {
 
             let published_block_items = self.published_block_items.get_mut(name).unwrap();
 
+            debug!("Publishing block items");
+
             let block_item = writer.export(
                 published_block_items.len()
             ).map_err(|err| {
                 warn!("Failed to export data for entity {}", writer.entity().name);
                 err
             })?;
+
+            debug!("Published block items");
 
             self.local_block_items.insert(name.clone(), block_item);
         }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use ipfs_api_prelude::IpfsApi;
-use log::debug;
+use log::{debug, trace};
 use crate::constant::{PARQUET_METADATA_FIELD_BLOCKS_PAGINATION, PARQUET_METADATA_FIELD_ENGINE};
 use crate::ipfs::client::get_ipfs_client;
 use crate::ipfs::client::AddLocalOps;
@@ -68,7 +68,11 @@ impl DatasourceExporter {
         let ipfs_client = get_ipfs_client(self.context.ipfs_daemon_url.as_str())?;
 
         for (name, local_block_item) in local_block_items {
+            trace!("IPFS Exporting {}", name);
+
             let add_response = ipfs_client.add_local(PathBuf::from(local_block_item.local_path.clone())).await?;
+
+            trace!("IPFS Exported {}", name);
 
             if ! published_block_items.contains_key(name) {
                 published_block_items.insert(name.clone(),vec![]);

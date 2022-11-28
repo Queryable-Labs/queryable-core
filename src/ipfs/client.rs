@@ -9,7 +9,7 @@ use ipfs_api_backend_hyper::IpfsClient as BackendIpfsClient;
 pub use ipfs_api_backend_hyper::IpfsApi;
 pub use ipfs_api_backend_hyper::TryFromUri;
 use ipfs_api_backend_hyper::response::{AddResponse, NamePublishResponse};
-use log::debug;
+use log::{debug, trace};
 use crate::ipfs::name_publish::NamePublish;
 use crate::types::error::IpfsError;
 
@@ -65,6 +65,8 @@ impl AddLocalOps for IpfsClient {
         let file = File::open(path)?;
 
         let result = self.add(file).await;
+
+        trace!("Uploaded file");
 
         match result {
             Ok(file) => {
