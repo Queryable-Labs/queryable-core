@@ -658,11 +658,21 @@ fn make_list_builder(data_type: &DataType, capacity: usize) -> Result<Box<dyn Ar
                     capacity
                 )
             ))
-        },
+        }
         DataType::FixedSizeBinary(len) => {
             Ok(Box::new(
                 ListBuilder::with_capacity(
                     FixedSizeBinaryBuilder::with_capacity(capacity, *len),
+                    capacity
+                )
+            ))
+        }
+        DataType::LargeBinary => {
+            Ok(Box::new(
+                ListBuilder::with_capacity(
+                    LargeBinaryBuilder::with_capacity(
+                        1024, capacity
+                    ),
                     capacity
                 )
             ))
